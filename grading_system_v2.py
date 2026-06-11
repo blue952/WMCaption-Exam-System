@@ -62,7 +62,7 @@ class GradingSystem:
             self.question_map[q['q']] = idx
         return self.question_map
     
-    def load_answers_from_wjx_excel(self, excel_path: str) -> List[Dict]:
+    def load_answers_from_wjx_excel(self, excel_path: str, exam_questions: List[Dict] = None) -> List[Dict]:
         """从问卷星导出的Excel加载学生答案"""
         try:
             import pandas as pd
@@ -74,25 +74,69 @@ class GradingSystem:
         df = pd.read_excel(excel_path)
         
         meta_columns = ['序号', '用户ID', '提交答卷时间', '所用时间', 
-                       '来源', '来源详情', '来自IP', '总分', '您的姓名']
+                       '来源', '来源详情', '来自IP', '总分', '您的姓名', '姓名']
+        
+        def is_meta_column(column_name: str) -> bool:
+            key = re.sub(r'[\s\W_]+', '', str(column_name)).lower()
+            if not key:
+                return False
+            meta_keys = ['序号', '用户id', '提交答卷时间', '所用时间', '来源', '来源详情', '来自ip', '总分', '您的姓名', '姓名']
+            return any(meta_key in key for meta_key in meta_keys)
+        
+        answer_cols = [col for col in df.columns if not is_meta_column(col)]
+        question_groups = {}
+        ordered_question_nums = []
+        name_column = next((col for col in df.columns if re.search(r'姓名', str(col))), '您的姓名')
+        id_column = next((col for col in df.columns if re.search(r'用户id|userid', str(col), re.I)), '用户ID')
+        
+        for col_name in answer_cols:
+            header = str(col_name)
+            question_num = self._parse_question_number_from_header(header)
+            if question_num is None:
+                question_num = len(ordered_question_nums) + 1
+            if question_num not in question_groups:
+                question_groups[question_num] = []
+                ordered_question_nums.append(question_num)
+            question_groups[question_num].append((col_name, header))
+        
+        question_mapping = {num: num for num in ordered_question_nums}
+        if exam_questions:
+            question_texts = [q['q'] for q in exam_questions]
+            for num, group in question_groups.items():
+                combined_header = ' '.join(header for _, header in group)
+                matched_idx, score = self._match_header_to_exam_question_index(combined_header, question_texts)
+                if score >= 0.5:
+                    question_mapping[num] = matched_idx + 1
+                elif num < 1 or num > len(exam_questions):
+                    question_mapping[num] = matched_idx + 1
         
         answers = []
         
         for idx, row in df.iterrows():
+            student_name_raw = str(row.get(name_column, '')).strip()
+            if not student_name_raw or student_name_raw.lower() == 'nan':
+                student_name_raw = f'匿名_{idx}'
+            student_id_raw = str(row.get(id_column, f'user_{idx}'))
             student_data = {
-                'student_id': str(row.get('用户ID', f'user_{idx}')),
-                'student_name': str(row.get('您的姓名', f'匿名_{idx}')),
+                'student_id': student_id_raw,
+                'student_name': student_name_raw,
                 'submit_time': str(row.get('提交答卷时间', '')),
                 'answers': {}
             }
             
-            answer_cols = [col for col in df.columns if col not in meta_columns]
-            
-            for col_idx, col_name in enumerate(answer_cols, 1):
-                answer_text = str(row.get(col_name, '')).strip()
-                if answer_text and answer_text != 'nan':
-                    answer_letter = self._extract_answer_letter(answer_text)
-                    student_data['answers'][col_idx] = answer_letter or answer_text
+            for raw_num, cols in question_groups.items():
+                answer_parts = []
+                for col_name, _ in cols:
+                    answer_text = str(row.get(col_name, '')).strip()
+                    if answer_text and answer_text != 'nan':
+                        answer_letter = self._extract_answer_letter(answer_text)
+                        answer_parts.append(answer_letter if answer_letter else answer_text)
+                if not answer_parts:
+                    continue
+                combined_answer = ' '.join(answer_parts).strip()
+                mapped_num = question_mapping.get(raw_num, raw_num)
+                if mapped_num >= 1:
+                    student_data['answers'][mapped_num] = combined_answer
             
             answers.append(student_data)
         
@@ -104,14 +148,16 @@ class GradingSystem:
         if not answer_text:
             return ''
         
-        match = re.match(r'^([A-Z])[、．\s\.]', answer_text)
-        if match:
-            return match.group(1)
-        
-        if '、' in answer_text or ',' in answer_text:
-            letters = re.findall(r'([A-Z])[、,．\s]', answer_text)
+        # 多选题优先：包含分隔符（问卷星多选用┋分隔）
+        if '┋' in answer_text or answer_text.count('、') > 1 or answer_text.count(',') > 1:
+            letters = re.findall(r'([A-Z])[\.、]', answer_text)
             if letters:
                 return ''.join(letters)
+        
+        # 单选题/判断题：匹配 A. 或 A、 开头
+        match = re.match(r'^([A-Z])[、．\.]', answer_text)
+        if match:
+            return match.group(1)
         
         if answer_text in ['正确', 'A、正确', 'A.正确']:
             return 'A'
@@ -119,6 +165,33 @@ class GradingSystem:
             return 'B'
         
         return answer_text
+
+    def _parse_question_number_from_header(self, header: str) -> int | None:
+        """从问卷星列标题中解析题号"""
+        if not header:
+            return None
+        match = re.match(r'^\s*(\d+)', header)
+        if match:
+            return int(match.group(1))
+        match = re.search(r'第\s*(\d+)\s*题', header)
+        if match:
+            return int(match.group(1))
+        return None
+
+    def _normalize_text(self, text: str) -> str:
+        return re.sub(r'\s+', '', str(text)).lower()
+
+    def _match_header_to_exam_question_index(self, header: str, question_texts: List[str]) -> Tuple[int, float]:
+        """将问卷星列标题匹配到考试 JSON 题目索引"""
+        header_norm = self._normalize_text(header)
+        best_score = -1.0
+        best_index = 0
+        for idx, q_text in enumerate(question_texts):
+            score = SequenceMatcher(None, header_norm, self._normalize_text(q_text)).ratio()
+            if score > best_score:
+                best_score = score
+                best_index = idx
+        return best_index, best_score
     
     def grade_objective_question(self, question: Dict, student_answer: str) -> Tuple[float, str]:
         """客观题评分 - 快速计算"""
@@ -491,10 +564,10 @@ def main():
     """主函数"""
     # ==================== 路径配置区域 ====================
     # 1. 答题结果Excel（问卷星下载的）
-    ANSWER_EXCEL_PATH = os.path.join(ROOT_DIR, 'data', 'answer', '367793615_按文本_WM内部评估_2_2.xlsx')
+    ANSWER_EXCEL_PATH = os.path.join(ROOT_DIR, 'data', 'answer', '368260014_按文本_WMday1小测_11_11.xlsx')
     
     # 2. 考试JSON文件（组卷后生成的试卷JSON）
-    EXAM_JSON_PATH = os.path.join(ROOT_DIR, 'data', 'exer', 'WMCaption考试_20260609_135613.json')
+    EXAM_JSON_PATH = os.path.join(ROOT_DIR, 'data', 'exer', 'WMCaption考试_20260611_173910.json')
     
     # 3. 评分结果输出目录
     OUTPUT_DIR = os.path.join(ROOT_DIR, 'data', 'outputbyollama')
@@ -539,7 +612,7 @@ def main():
     
     # 加载答案
     print(f"\n加载答案: {ANSWER_EXCEL_PATH}")
-    students_data = grader.load_answers_from_wjx_excel(ANSWER_EXCEL_PATH)
+    students_data = grader.load_answers_from_wjx_excel(ANSWER_EXCEL_PATH, exam_data['questions'])
     
     if not students_data:
         print("✗ 未能加载任何答案")
@@ -578,7 +651,7 @@ def main():
     print("-" * 40)
     for i, r in enumerate(all_results, 1):
         status = "✓ 通过" if r['percentage'] >= 60 else "✗ 需关注"
-        print(f"{i:<4} {r['student_name']:<12} {r['total_score']:<8.2f} {status}")
+        print(f"{i:<4} {r['student_name']:<4} {r['total_score']:<8.2f} {status}")
     
     # 导出汇总CSV表（唯一输出文件）
     summary_csv_path = grader.export_summary_csv(all_results, OUTPUT_DIR, exam_data)
