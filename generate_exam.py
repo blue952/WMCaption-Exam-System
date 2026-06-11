@@ -17,13 +17,14 @@ DEFAULT_HISTORY_PATH = os.path.join(ROOT_DIR, 'exam_history.json')
 DEFAULT_BANK_PATH = os.path.join(ROOT_DIR, 'data', 'test', 'WMCaption_题库_v2.json')
 DEFAULT_OUTPUT_DIR = os.path.join(ROOT_DIR, 'data', 'exer')
 
+
 class ExamGenerator:
     """试卷生成器"""
     
     # 默认组题策略配置
     DEFAULT_CONFIG = {
         'total_questions': 40,  # 总题数
-        'total_score': 50,     # 总分（可选，后续可根据题型自动分配分值）
+        'total_score': 100,     # 总分改为100
         'difficulty_ratio': {   # 难度配比
             1: 0.30,  # 简单 30%
             2: 0.55,  # 中等 55%
@@ -34,8 +35,8 @@ class ExamGenerator:
             '判断': 11,        # 判断11题
             '多选': 7,      # 多选7题
             '填空': 3,          # 填空3题
-            '情景': 2,      # 情景2题
-            '综合': 1  # 综合1题
+            '情景': 2,      # 情景2题（主观）
+            '综合': 1   # 综合1题（主观）
         },
         'chapter_weights': {    # 章节权重配置
             'A': 4,   # 定义与哲学
@@ -310,6 +311,7 @@ class ExamGenerator:
         print(f"试卷名称: {exam['exam_name']}")
         print(f"生成时间: {exam['created_at']}")
         print(f"总题数: {exam['total_questions']}")
+        print(f"总分: {self.config['total_score']}分")
         print(f"{'='*60}")
         
         # 统计
@@ -334,87 +336,7 @@ class ExamGenerator:
         
         print(f"\n覆盖章节: {len(chapter_count)}个")
         print(f"  章节: {', '.join(sorted(chapter_count.keys()))}")
-
-    # def export_for_wenjuanxing(self, exam: Dict, output_dir: str = DEFAULT_OUTPUT_DIR) -> str:
-    #     """
-    #     导出为问卷星/腾讯问卷兼容的CSV格式
-    #     支持批量导入题目
-    #     """
-    #     import csv
-        
-    #     os.makedirs(output_dir, exist_ok=True)
-        
-    #     # 问卷星格式：题型,题干,选项1,选项2,选项3,选项4,正确答案,解析,分值
-    #     output_file = os.path.join(output_dir, f"{exam['exam_name']}_问卷星导入.csv")
-        
-    #     with open(output_file, 'w', newline='', encoding='utf-8-sig') as f:
-    #         writer = csv.writer(f)
-    #         # 写入表头
-    #         writer.writerow(['题型', '题目', '选项A', '选项B', '选项C', '选项D', '选项E', '正确答案', '解析', '分值'])
-            
-    #         for q in exam['questions']:
-    #             q_type = q['type']
-                
-    #             # 转换题型编码
-    #             if q_type == '单选':
-    #                 type_code = '单选题'
-    #             elif q_type == '多选':
-    #                 type_code = '多选题'
-    #             elif q_type == '判断':
-    #                 type_code = '判断题'
-    #             elif q_type == '填空':
-    #                 type_code = '填空题'
-    #             else:
-    #                 type_code = '问答题'  # 简答/情景/综合
-                
-    #             # 处理选项
-    #             options = q.get('opts') or []
-    #             opt_texts = ['', '', '', '', '']
-    #             for i, opt in enumerate(options[:5]):
-    #                 if isinstance(opt, str):
-    #                     # 去除选项前缀
-    #                     opt_clean = opt.strip()
-    #                     if len(opt_clean) > 2 and opt_clean[1] in ['.', '．', ' ']:
-    #                         opt_clean = opt_clean[2:].strip()
-    #                     opt_texts[i] = opt_clean
-    #                 else:
-    #                     opt_texts[i] = str(opt)
-                
-    #             # 处理答案
-    #             ans = q.get('ans', '')
-    #             if isinstance(ans, list):
-    #                 ans = ','.join(ans)
-                
-    #             # 判断题选项处理（判断题选项固定为正确/错误）
-    #             if q_type == '判断':
-    #                 opt_texts[0] = '正确'
-    #                 opt_texts[1] = '错误'
-    #                 opt_texts[2] = ''
-    #                 opt_texts[3] = ''
-    #                 opt_texts[4] = ''
-                
-    #             writer.writerow([
-    #                 type_code,
-    #                 q['q'],
-    #                 opt_texts[0],
-    #                 opt_texts[1],
-    #                 opt_texts[2],
-    #                 opt_texts[3],
-    #                 opt_texts[4],
-    #                 ans,
-    #                 q.get('explain', ''),
-    #                 '1'  # 默认每题1分
-    #             ])
-        
-    #     print(f"✓ 问卷星格式已导出: {output_file}")
-    #     print("  使用说明:")
-    #     print("  1. 访问 https://www.wjx.cn 或 https://wj.qq.com")
-    #     print("  2. 创建新问卷 → 选择'考试'类型")
-    #     print("  3. 点击'导入题目' → 选择此CSV文件")
-    #     print("  4. 系统自动识别题型、选项和正确答案")
-        
-    #     return output_file
-
+    
     def export_for_wenjuanxing(self, exam: Dict, output_dir: str = DEFAULT_OUTPUT_DIR, file_format: str = 'csv') -> str:
         """
         导出为问卷星/腾讯问卷兼容格式
@@ -425,7 +347,7 @@ class ExamGenerator:
         os.makedirs(output_dir, exist_ok=True)
         
         # 计算每题分值（支持小数）
-        total_score = self.config.get('total_score', 40)
+        total_score = self.config.get('total_score', 100)  # 默认100分
         question_count = len(exam['questions'])
         score_per_question = round(total_score / question_count, 2)
         
@@ -435,7 +357,7 @@ class ExamGenerator:
         
         # 添加姓名收集题（作为第1题）
         rows.append(['填空题', '您的姓名', '', '', '', '', '', '', '', '0'])
-
+        
         for q in exam['questions']:
             q_type = q['type']
             
@@ -513,7 +435,7 @@ class ExamGenerator:
                 writer.writerows(rows)
             print(f"✓ 问卷星CSV格式已导出: {output_file}")
         
-        print(" 使用说明:")
+        print("  使用说明:")
         print("  1. 访问 https://www.wjx.cn 或 https://wj.qq.com")
         print("  2. 创建新问卷 → 选择'考试'类型")
         print("  3. 点击'导入题目' → 选择此文件")
@@ -521,50 +443,6 @@ class ExamGenerator:
         
         return output_file
 
-# def main():
-#     """主函数"""
-#     import argparse
-    
-#     parser = argparse.ArgumentParser(description='WMCaption 智能组题系统')
-#     parser.add_argument('--bank', '-b', default=DEFAULT_BANK_PATH, help='题库JSON路径')
-#     parser.add_argument('--name', '-n', default=None, help='试卷名称')
-#     parser.add_argument('--exclude', '-e', type=int, default=5, help='排除最近N次考试的题目')
-#     parser.add_argument('--output', '-o', default=DEFAULT_OUTPUT_DIR, help='输出目录')
-    
-#     args = parser.parse_args()
-    
-#     # 检查题库文件
-#     if not os.path.exists(args.bank):
-#         print(f"✗ 错误: 找不到题库文件 {args.bank}")
-#         print("请确保JSON题库文件存在")
-#         return
-    
-#     # 创建生成器
-#     generator = ExamGenerator(args.bank)
-    
-#     # 生成试卷
-#     print("\n正在生成试卷...")
-#     exam = generator.generate_exam(exam_name=args.name, exclude_recent=args.exclude)
-    
-#     # 打印摘要
-#     generator.print_exam_summary(exam)
-    
-#     # 导出为飞书格式
-#     exam_file, answer_file = generator.export_for_feishu(exam, args.output)
-    
-#     # 同时保存JSON格式
-#     exam_json = os.path.join(args.output, f"{exam['exam_name']}.json")
-#     with open(exam_json, 'w', encoding='utf-8') as f:
-#         json.dump(exam, f, ensure_ascii=False, indent=2)
-#     print(f"\n✓ 试卷JSON已保存: {exam_json}")
-    
-#     print(f"\n{'='*60}")
-#     print("使用说明:")
-#     print(f"1. 将试卷CSV导入飞书多维表格")
-#     print(f"2. 创建表单供学员答题")
-#     print(f"3. 答题完成后导出答案CSV")
-#     print(f"4. 使用 grading_system.py 进行自动评分")
-#     print(f"{'='*60}")
 
 def main():
     """主函数"""

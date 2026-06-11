@@ -4,6 +4,7 @@
 World Model Caption 自动评分系统 - 带进度条版本
 支持客观题自动评分 + Ollama主观题语义评分
 适配问卷星Excel格式
+主观题占总分5%，客观题占95%
 """
 
 import json
@@ -39,7 +40,8 @@ class GradingSystem:
         self.objective_types = ['单选', '判断', '多选', '填空']
         self.subjective_types = ['简答', '情景', '综合']
         self.total_score = total_score  # 考试总分
-        self.score_per_question = 1.0   # 每题分值，后面根据题目数量计算
+        self.objective_weight = 0.95    # 客观题占95%
+        self.subjective_weight = 0.05   # 主观题占5%
     
     def load_exam_data(self, exam_json_path: str) -> Dict:
         """加载考试数据"""
@@ -290,12 +292,14 @@ class GradingSystem:
         questions = exam_data['questions']
         total_questions = len(questions)
         
-        # 计算每题分值（根据总分和题目数量）
-        self.score_per_question = self.total_score / total_questions
-        
-        # 统计需要Ollama评分的主观题数量
+        # 统计主观题和客观题数量
         subjective_count = sum(1 for q in questions if q['type'] in self.subjective_types)
         objective_count = total_questions - subjective_count
+        
+        # 计算每类题目的分值
+        # 客观题总分95分，主观题总分5分
+        objective_score_per_question = (self.total_score * self.objective_weight) / objective_count if objective_count > 0 else 0
+        subjective_score_per_question = (self.total_score * self.subjective_weight) / subjective_count if subjective_count > 0 else 0
         
         results = {
             'student_id': student_data['student_id'],
@@ -303,7 +307,7 @@ class GradingSystem:
             'submit_time': student_data.get('submit_time', ''),
             'graded_at': datetime.now().isoformat(),
             'total_score': 0,
-            'max_score': 0,
+            'max_score': self.total_score,
             'percentage': 0,
             'questions': [],
             'summary': {}
@@ -312,7 +316,7 @@ class GradingSystem:
         student_header = f"[{student_idx}/{total_students}] {student_data['student_name']}"
         print(f"\n{'='*60}")
         print(f"开始评分: {student_header}")
-        print(f"  总题数: {total_questions} | 客观题: {objective_count} | 主观题: {subjective_count}")
+        print(f"  总题数: {total_questions} | 客观题: {objective_count}({self.objective_weight*100:.0f}%) | 主观题: {subjective_count}({self.subjective_weight*100:.0f}%)")
         print(f"{'='*60}")
         
         # 先处理客观题（快速）
@@ -325,8 +329,8 @@ class GradingSystem:
             student_answer = student_answers.get(idx, '')
             score, comment = self.grade_objective_question(question, student_answer)
             
-            # 计算实际得分（按每题分值）
-            actual_score = score * self.score_per_question
+            # 客观题按95%权重计算实际得分
+            actual_score = score * objective_score_per_question
             
             q_result = {
                 'question_num': idx,
@@ -337,12 +341,11 @@ class GradingSystem:
                 'correct_answer': question.get('ans', ''),
                 'score_rate': round(score, 2),           # 得分率 0-1
                 'score': round(actual_score, 2),         # 实际得分
-                'max_score': round(self.score_per_question, 2),  # 该题满分
+                'max_score': round(objective_score_per_question, 2),  # 该题满分
                 'comment': comment
             }
             results['questions'].append(q_result)
             results['total_score'] += actual_score
-            results['max_score'] += self.score_per_question
             
             if score >= 0.9:
                 objective_correct += 1
@@ -370,8 +373,8 @@ class GradingSystem:
                 
                 score, comment = self.grade_subjective_question_ollama(question, student_answer)
                 
-                # 计算实际得分（按每题分值）
-                actual_score = score * self.score_per_question
+                # 主观题按5%权重计算实际得分
+                actual_score = score * subjective_score_per_question
                 
                 q_result = {
                     'question_num': idx,
@@ -382,12 +385,11 @@ class GradingSystem:
                     'correct_answer': question.get('ans', ''),
                     'score_rate': round(score, 2),
                     'score': round(actual_score, 2),
-                    'max_score': round(self.score_per_question, 2),
+                    'max_score': round(subjective_score_per_question, 2),
                     'comment': comment
                 }
                 results['questions'].append(q_result)
                 results['total_score'] += actual_score
-                results['max_score'] += self.score_per_question
             
             # 完成最后一步
             print_progress_bar(subjective_count, subjective_count, prefix, "完成", length=30)
@@ -440,7 +442,7 @@ class GradingSystem:
         return summary
     
     def export_summary_csv(self, all_results: List[Dict], output_dir: str, exam_data: Dict) -> str:
-        """导出汇总CSV表格：姓名|得分|需关注|题1|题2|...|题40"""
+        """导出汇总CSV表格：姓名|得分|需关注|题1|题2|..."""
         os.makedirs(output_dir, exist_ok=True)
         
         # 获取题目数量
@@ -503,8 +505,8 @@ def main():
     # 5. 是否禁用Ollama
     DISABLE_OLLAMA = False
     
-    # 6. 考试总分（问卷星设置的满分，默认50分）
-    EXAM_TOTAL_SCORE = 50
+    # 6. 考试总分（问卷星设置的满分，改为100分）
+    EXAM_TOTAL_SCORE = 100
     # ==================== 配置结束 ====================
     
     # 检查文件
@@ -524,6 +526,7 @@ def main():
     print(f"\n加载考试文件: {EXAM_JSON_PATH}")
     exam_data = grader.load_exam_data(EXAM_JSON_PATH)
     print(f"  共 {len(exam_data['questions'])} 题，满分 {EXAM_TOTAL_SCORE} 分")
+    print(f"  客观题占95%({EXAM_TOTAL_SCORE * 0.95:.1f}分)，主观题占5%({EXAM_TOTAL_SCORE * 0.05:.1f}分)")
     
     # 统计题型
     type_count = {}
