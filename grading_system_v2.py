@@ -282,11 +282,52 @@ class GradingSystem:
             return score, f"~ 部分正确（{score:.0%}），参考答案: {correct_answer}"
         else:
             return 0.0, f"✗ 错误，参考答案: {correct_answer}"
-    
+
+    def _extract_subjective_tokens(self, text: str) -> List[str]:
+        """提取主观答案关键词/分词"""
+        if not text:
+            return []
+        text = self._normalize_text(text)
+        try:
+            import jieba
+            tokens = [tok for tok in jieba.lcut(text) if len(tok.strip()) > 1]
+            if tokens:
+                return tokens
+        except ImportError:
+            pass
+        tokens = re.findall(r'[\u4e00-\u9fa5a-zA-Z0-9]{2,}', text)
+        if tokens:
+            return tokens
+        return [text[i:i+2] for i in range(len(text) - 1)]
+
+    def _subjective_similarity(self, student_answer: str, correct_answer: str) -> float:
+        """为主观题提供更稳健的相似度评估"""
+        if not student_answer or not correct_answer:
+            return 0.0
+        student_norm = self._normalize_text(student_answer)
+        correct_norm = self._normalize_text(correct_answer)
+        if student_norm == correct_norm:
+            return 1.0
+
+        student_tokens = set(self._extract_subjective_tokens(student_answer))
+        correct_tokens = set(self._extract_subjective_tokens(correct_answer))
+        if student_tokens and correct_tokens:
+            jaccard = len(student_tokens & correct_tokens) / len(student_tokens | correct_tokens)
+        else:
+            jaccard = 0.0
+
+        seq_ratio = SequenceMatcher(None, student_norm, correct_norm).ratio()
+
+        length_ratio = min(len(student_norm), len(correct_norm)) / max(len(student_norm), len(correct_norm)) if max(len(student_norm), len(correct_norm)) > 0 else 0.0
+
+        return min(1.0, seq_ratio * 0.3 + jaccard * 0.55 + length_ratio * 0.15)
+
     def grade_subjective_question_ollama(self, question: Dict, student_answer: str) -> Tuple[float, str]:
         """使用Ollama模型进行主观题语义评分"""
         correct_answer = question.get('explain', '') or question.get('ans', '')
-        
+        if not student_answer or str(student_answer).strip().lower() in ['nan', '']:
+            return 0.0, "? 未作答"
+
         prompt = f"""你是一位专业的WM Caption培训评分老师，请对以下学员答案进行评分。
 
 【题目】{question['q']}
@@ -294,35 +335,38 @@ class GradingSystem:
 【学员答案】{student_answer}
 
 评分标准（满分100分）：
-- 85-100分：答案完全正确，或核心概念表达准确
-- 70-84分：答案基本正确，但不够完整或有轻微偏差
-- 50-69分：答案部分正确，理解有一定偏差
-- 0-49分：答案错误或与题目无关
+- 85-100分：答案完全正确，或核心概念表达准确。
+- 70-84分：答案基本正确，但不够完整或有轻微偏差。
+- 50-69分：答案部分正确，理解有一定偏差。
+- 0-49分：答案错误或与题目无关。
 
-请严格按照以下格式输出：
-分数: [0-100的数字]
+请严格按照以下中文格式输出，不要输出其他内容：
+分数: [0-100的整数]
 评语: [简要评价，说明得分原因]
+
+如果无法判断，请直接返回分数 0。
 """
         
         try:
             response = self._call_ollama(prompt)
             score_match = re.search(r'分数[:：]?\s*(\d+)', response)
-            
             if score_match:
-                score = int(score_match.group(1)) / 100.0
+                score = min(100, max(0, int(score_match.group(1)))) / 100.0
             else:
-                score = self._semantic_similarity(student_answer, correct_answer)
+                score = self._subjective_similarity(student_answer, correct_answer)
             
             comment_match = re.search(r'评语[:：]?\s*(.+?)(?:\n|$)', response, re.DOTALL)
             if comment_match:
                 comment = comment_match.group(1).strip()
             else:
-                comment = response[:200].replace('\n', ' ')
+                comment = response.strip().replace('\n', ' ')
+            
+            if not comment:
+                comment = f"主观题评分，参考答案：{correct_answer}"
             
             return min(1.0, max(0.0, score)), comment
-            
-        except Exception as e:
-            score = self._semantic_similarity(student_answer, correct_answer)
+        except Exception:
+            score = self._subjective_similarity(student_answer, correct_answer)
             return score, f"Ollama失败，相似度{score:.0%}"
     
     def _call_ollama(self, prompt: str) -> str:
